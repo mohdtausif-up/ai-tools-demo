@@ -1,0 +1,1089 @@
+<?php
+/*
+ Single-file Image Compressor Web App
+ Implements drag & drop queue, compression (Imagick/GD), ZIP creation with progressive build, error handling, accessibility, and SEO metadata.
+*/
+
+declare(strict_types=1);
+session_start();
+
+// ----------------------------- CONFIG & CONSTANTS -----------------------------
+const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
+const MAX_FILE_COUNT = 50;
+const BASE_UPLOAD_DIR = __DIR__ . '/uploads';
+const BASE_COMPRESS_DIR = __DIR__ . '/compressed';
+const BASE_ZIP_DIR = __DIR__ . '/zips';
+const ALLOWED_EXTS = ['jpg','jpeg','png','webp','gif','heic','heif','svg'];
+const RASTER_ONLY_IF_NO_IMAGICK = ['heic','heif','svg'];
+const DEFAULT_JPEG_QUALITY = 80;
+const MIN_JPEG_QUALITY = 60;
+const MAX_JPEG_QUALITY = 90;
+
+if (!isset($_SESSION['app_token'])) {
+	$_SESSION['app_token'] = bin2hex(random_bytes(16));
+}
+$csrfToken = $_SESSION['app_token'];
+
+if (!isset($_SESSION['session_id'])) {
+	$_SESSION['session_id'] = bin2hex(random_bytes(12));
+}
+$sessionId = $_SESSION['session_id'];
+
+// Maintain file meta in session
+if (!isset($_SESSION['files'])) {
+	$_SESSION['files'] = []; // id => [name, saved_name, original_size, status, error, compressed_name, compressed_size, percent_saved]
+}
+
+// ZIP session state
+if (!isset($_SESSION['zip_state'])) {
+	$_SESSION['zip_state'] = [
+		'status' => 'idle', // idle|building|done
+		'current_index' => 0,
+		'files' => [],
+		'zip_path' => '',
+		'added' => 0
+	];
+}
+
+// ----------------------------- HELPER FUNCTIONS -----------------------------
+function ensureFolders(string $sid): void {
+	foreach ([BASE_UPLOAD_DIR, BASE_COMPRESS_DIR, BASE_ZIP_DIR] as $base) {
+		if (!is_dir($base)) @mkdir($base, 0755, true);
+	}
+	$paths = [
+		BASE_UPLOAD_DIR . "/$sid",
+		BASE_COMPRESS_DIR . "/$sid",
+		BASE_COMPRESS_DIR . "/$sid/thumbs",
+		BASE_ZIP_DIR . "/$sid",
+	];
+	foreach ($paths as $p) {
+		if (!is_dir($p)) @mkdir($p, 0755, true);
+	}
+}
+
+function detectLibrary(): string {
+	if (class_exists('Imagick')) return 'imagick';
+	if (extension_loaded('gd')) return 'gd';
+	return 'none';
+}
+
+function safeFilename(string $name): string {
+	$name = preg_replace('/[\\\/]+/', '_', $name);
+	$name = preg_replace('/[^A-Za-z0-9._-]/', '_', $name);
+	$name = preg_replace('/_{2,}/','_', $name);
+	$parts = explode('.', $name);
+	$ext = strtolower(end($parts));
+	if (!in_array($ext, ALLOWED_EXTS)) $ext = 'dat';
+	$base = implode('.', array_slice($parts,0,-1));
+	if ($base === '') $base = 'file';
+	return $base . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
+}
+
+function humanSize(int $bytes): string {
+	$units = ['B','KB','MB','GB'];
+	$i=0; $size = $bytes;
+	while ($size >= 1024 && $i < count($units)-1) { $size /= 1024; $i++; }
+	return sprintf($size < 10 ? '%.2f %s' : '%.0f %s', $size, $units[$i]);
+}
+
+function jsonResponse(array $data): void {
+	header('Content-Type: application/json');
+	echo json_encode($data);
+	exit;
+}
+
+function validateCsrf(): void {
+	global $csrfToken;
+	$t = $_POST['csrf'] ?? $_GET['csrf'] ?? '';
+	if ($t !== $csrfToken) {
+		jsonResponse(['ok'=>false,'code'=>'csrf','message'=>'Invalid CSRF token']);
+	}
+}
+
+function detectImageInfo(string $path): array {
+	$mime = '';
+	$isAnimated = false;
+	$ext = strtolower(pathinfo($path, PATHINFO_EXTENSION));
+	if (class_exists('Imagick')) {
+		try {
+			$im = new Imagick();
+			$im->readImage($path);
+			$mime = $im->getImageMimeType();
+			if ($im->getNumberImages() > 1) $isAnimated = true;
+		} catch (Exception $e) {
+			// fallback
+		}
+	}
+	if ($mime === '' && function_exists('getimagesize')) {
+		$info = @getimagesize($path);
+		if ($info && isset($info['mime'])) $mime = $info['mime'];
+	}
+	return ['ext'=>$ext,'mime'=>$mime,'animated'=>$isAnimated];
+}
+
+function autoOrientGd($image, string $path): \GdImage {
+	if (!function_exists('exif_read_data')) return $image;
+	$exif = @exif_read_data($path);
+	if (!$exif || !isset($exif['Orientation'])) return $image;
+	$orientation = (int)$exif['Orientation'];
+	switch ($orientation) {
+		case 3: $image = imagerotate($image, 180, 0); break;
+		case 6: $image = imagerotate($image, -90, 0); break;
+		case 8: $image = imagerotate($image, 90, 0); break;
+	}
+	return $image;
+}
+
+function compressImage(string $srcPath, string $destPath, int $quality, bool $convertWebp, array &$meta): array {
+	$lib = detectLibrary();
+	if ($lib === 'none') return ['ok'=>false,'code'=>'lib','message'=>'No image library available'];
+	$info = detectImageInfo($srcPath);
+	$ext = $info['ext'];
+	$origSize = filesize($srcPath);
+	$targetExt = $convertWebp ? 'webp' : $ext;
+	$animated = $info['animated'];
+
+	// Handle unsupported formats or animated GIF
+	if (in_array($ext, RASTER_ONLY_IF_NO_IMAGICK) && $lib !== 'imagick') {
+		return ['ok'=>false,'code'=>'unsupported','message'=>strtoupper($ext).' unsupported without Imagick'];
+	}
+	if ($ext === 'svg') {
+		// Rasterize only with Imagick
+		if ($lib !== 'imagick') return ['ok'=>false,'code'=>'unsupported','message'=>'SVG unsupported without Imagick'];
+	}
+	if ($ext === 'gif' && $animated) {
+		// Convert first frame to PNG unless WebP chosen
+		if ($lib === 'imagick') {
+			try {
+				$im = new Imagick($srcPath.'[0]');
+				$im->setImageFormat($convertWebp ? 'webp' : 'png');
+				$im->stripImage();
+				$im->writeImage($destPath);
+				$newSize = filesize($destPath);
+				$meta['converted_from_animated_gif'] = true;
+				return ['ok'=>true,'originalSize'=>$origSize,'newSize'=>$newSize,'ext'=>$convertWebp?'webp':'png'];
+			} catch (Exception $e) {
+				return ['ok'=>false,'code'=>'gif','message'=>'Animated GIF conversion failed: '.$e->getMessage()];
+			}
+		} else {
+			return ['ok'=>false,'code'=>'gif','message'=>'Animated GIF unsupported without Imagick'];
+		}
+	}
+
+	// Compression pipeline
+	try {
+		if ($lib === 'imagick') {
+			$image = new Imagick($srcPath);
+			// Auto orient
+			if (method_exists($image,'autoOrient')) $image->autoOrient();
+			$format = strtolower($image->getImageFormat());
+			if ($convertWebp) {
+				$format = 'webp';
+				$image->setImageFormat('webp');
+			}
+			switch ($format) {
+				case 'jpeg':
+				case 'jpg':
+					$image->setImageCompression(Imagick::COMPRESSION_JPEG);
+					$image->setImageCompressionQuality($quality);
+					break;
+				case 'png':
+					// Use ZIP compression, optional quantize
+					$image->setImageCompression(Imagick::COMPRESSION_ZIP);
+					// quantize to reduce colors if large
+					if ($image->getImageColors() > 256) {
+						@$image->quantizeImage(256, Imagick::COLORSPACE_RGB, 0, false, false);
+					}
+					break;
+				case 'webp':
+					$image->setImageCompressionQuality($quality);
+					break;
+				case 'gif':
+					// Static GIF
+					$image->setImageCompressionQuality($quality);
+					break;
+				case 'svg':
+					// rasterize to PNG or WEBP
+					$image->setImageFormat($convertWebp?'webp':'png');
+					break;
+				case 'heic':
+				case 'heif':
+					// Set output format maybe heic or webp
+					if ($convertWebp) $image->setImageFormat('webp');
+					break;
+			}
+			@$image->stripImage();
+			$image->writeImage($destPath);
+			$newSize = filesize($destPath);
+		} else { // GD
+			$extLower = $ext;
+			if (in_array($extLower,['jpg','jpeg'])) {
+				$im = @imagecreatefromjpeg($srcPath);
+				if (!$im) return ['ok'=>false,'code'=>'invalid','message'=>'Corrupted JPEG'];
+				$im = autoOrientGd($im, $srcPath);
+				if ($convertWebp && function_exists('imagewebp')) {
+					imagewebp($im, $destPath, $quality);
+				} else {
+					imagejpeg($im, $destPath, $quality);
+				}
+				imagedestroy($im);
+			} elseif ($extLower==='png') {
+				$im = @imagecreatefrompng($srcPath);
+				if (!$im) return ['ok'=>false,'code'=>'invalid','message'=>'Corrupted PNG'];
+				if ($convertWebp && function_exists('imagewebp')) {
+					imagewebp($im, $destPath, $quality);
+				} else {
+					// compression level 0-9 approximate from quality
+					$level = (int)round((100-$quality)/10); // invert quality for png
+					imagepng($im, $destPath, max(0,min(9,$level)));
+				}
+				imagedestroy($im);
+			} elseif ($extLower==='gif') {
+				$im = @imagecreatefromgif($srcPath);
+				if (!$im) return ['ok'=>false,'code'=>'invalid','message'=>'Corrupted GIF'];
+				if ($convertWebp && function_exists('imagewebp')) {
+					imagewebp($im, $destPath, $quality);
+				} else {
+					imagegif($im, $destPath);
+				}
+				imagedestroy($im);
+			} elseif ($extLower==='webp') {
+				if (function_exists('imagecreatefromwebp')) {
+					$im = @imagecreatefromwebp($srcPath);
+					if (!$im) return ['ok'=>false,'code'=>'invalid','message'=>'Corrupted WebP'];
+					imagewebp($im, $destPath, $quality);
+					imagedestroy($im);
+				} else return ['ok'=>false,'code'=>'unsupported','message'=>'WebP unsupported in GD build'];
+			} else {
+				return ['ok'=>false,'code'=>'unsupported','message'=>strtoupper($extLower).' format unsupported in GD'];
+			}
+			$newSize = filesize($destPath);
+		}
+		return ['ok'=>true,'originalSize'=>$origSize,'newSize'=>$newSize,'ext'=>$targetExt];
+	} catch (Exception $e) {
+		return ['ok'=>false,'code'=>'compress','message'=>'Compression failed: '.$e->getMessage()];
+	}
+}
+
+function createThumbnail(string $src, string $dest, int $maxW=160, int $maxH=160): bool {
+	$lib = detectLibrary();
+	try {
+		if ($lib==='imagick') {
+			$im = new Imagick($src);
+			$im->thumbnailImage($maxW, $maxH, true, true);
+			$im->setImageFormat('jpeg');
+			$im->writeImage($dest);
+			return true;
+		} elseif ($lib==='gd') {
+			$ext = strtolower(pathinfo($src, PATHINFO_EXTENSION));
+			switch ($ext) {
+				case 'jpg':case 'jpeg': $im = imagecreatefromjpeg($src); break;
+				case 'png': $im = imagecreatefrompng($src); break;
+				case 'gif': $im = imagecreatefromgif($src); break;
+				case 'webp': if (function_exists('imagecreatefromwebp')) $im = imagecreatefromwebp($src); else return false; break;
+				default: return false;
+			}
+			if (!$im) return false;
+			$w = imagesx($im); $h = imagesy($im);
+			$ratio = min($maxW/$w, $maxH/$h);
+			$nw = (int)($w*$ratio); $nh=(int)($h*$ratio);
+			$thumb = imagecreatetruecolor($nw,$nh);
+			imagecopyresampled($thumb,$im,0,0,0,0,$nw,$nh,$w,$h);
+			imagejpeg($thumb,$dest,80);
+			imagedestroy($thumb); imagedestroy($im);
+			return true;
+		}
+	} catch (Exception $e) { return false; }
+	return false;
+}
+
+function beginZipBuild(): array {
+	global $sessionId;
+	$compressedDir = BASE_COMPRESS_DIR . "/$sessionId";
+	$files = [];
+	foreach ($_SESSION['files'] as $id => $meta) {
+		if (($meta['status'] ?? '') === 'done' && isset($meta['compressed_name'])) {
+			$files[] = $compressedDir . '/' . $meta['compressed_name'];
+		}
+	}
+	if (empty($files)) return ['ok'=>false,'code'=>'empty','message'=>'No compressed images to zip'];
+	$zipDir = BASE_ZIP_DIR . "/$sessionId";
+	$zipName = 'compressed_' . date('Ymd_His') . '.zip';
+	$zipPath = $zipDir . '/' . $zipName;
+	$_SESSION['zip_state'] = [
+		'status'=>'building',
+		'current_index'=>0,
+		'files'=>$files,
+		'zip_path'=>$zipPath,
+		'added'=>0
+	];
+	// Create empty zip
+	$zip = new ZipArchive();
+	if ($zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE) !== true) {
+		return ['ok'=>false,'code'=>'zip','message'=>'Cannot create ZIP'];
+	}
+	$zip->close();
+	return ['ok'=>true,'started'=>true];
+}
+
+function progressZip(): array {
+	$st = &$_SESSION['zip_state'];
+	if ($st['status'] !== 'building') {
+		if ($st['status']==='done') {
+			return ['ok'=>true,'percent'=>100,'zipUrl'=>'zips/'.$_SESSION['session_id'].'/'.basename($st['zip_path'])];
+		}
+		return ['ok'=>false,'code'=>'state','message'=>'ZIP not building'];
+	}
+	$total = count($st['files']);
+	if ($st['current_index'] >= $total) {
+		$st['status'] = 'done';
+		return ['ok'=>true,'percent'=>100,'zipUrl'=>'zips/'.$_SESSION['session_id'].'/'.basename($st['zip_path'])];
+	}
+	// Add next file
+	$file = $st['files'][$st['current_index']];
+	$zip = new ZipArchive();
+	if ($zip->open($st['zip_path'], ZipArchive::CREATE) === true) {
+		$zip->addFile($file, basename($file));
+		$zip->close();
+		$st['added']++;
+	} else {
+		return ['ok'=>false,'code'=>'zip','message'=>'Cannot modify ZIP'];
+	}
+	$st['current_index']++;
+	$percent = (int)floor(($st['current_index']/$total)*100);
+	if ($st['current_index'] >= $total) {
+		$st['status']='done';
+		return ['ok'=>true,'percent'=>100,'zipUrl'=>'zips/'.$_SESSION['session_id'].'/'.basename($st['zip_path'])];
+	}
+	return ['ok'=>true,'percent'=>$percent];
+}
+
+function cleanupSession(): array {
+	$sid = $_SESSION['session_id'];
+	foreach ([BASE_UPLOAD_DIR, BASE_COMPRESS_DIR, BASE_ZIP_DIR] as $base) {
+		$dir = $base . "/$sid";
+		if (is_dir($dir)) {
+			$it = new RecursiveIteratorIterator(new RecursiveDirectoryIterator($dir, FilesystemIterator::SKIP_DOTS), RecursiveIteratorIterator::CHILD_FIRST);
+			foreach ($it as $f) {
+				if ($f->isDir()) @rmdir($f->getPathname()); else @unlink($f->getPathname());
+			}
+			@rmdir($dir);
+		}
+	}
+	$_SESSION['files'] = [];
+	$_SESSION['zip_state'] = [ 'status'=>'idle','current_index'=>0,'files'=>[],'zip_path'=>'','added'=>0 ];
+	return ['ok'=>true];
+}
+
+// ----------------------------- ROUTER -----------------------------
+ensureFolders($sessionId);
+$action = $_GET['action'] ?? '';
+if ($action) {
+	if (in_array($action, ['upload','compress','zip','progress','cleanup','thumb'])) {
+		// JSON endpoints except thumb
+		if ($action !== 'thumb') {
+			header('Cache-Control: no-cache, no-store, must-revalidate');
+		}
+	}
+}
+
+if ($action === 'upload' && $_SERVER['REQUEST_METHOD']==='POST') {
+	validateCsrf();
+	if (!isset($_FILES['file'])) jsonResponse(['ok'=>false,'code'=>'nofile','message'=>'No file received']);
+	$file = $_FILES['file'];
+	if ($file['error'] !== UPLOAD_ERR_OK) jsonResponse(['ok'=>false,'code'=>'upload','message'=>'Upload error code '.$file['error']]);
+	if ($file['size'] > MAX_FILE_SIZE) jsonResponse(['ok'=>false,'code'=>'size','message'=>'File exceeds 20 MB limit']);
+	if (count($_SESSION['files']) >= MAX_FILE_COUNT) jsonResponse(['ok'=>false,'code'=>'count','message'=>'Too many files (limit '.MAX_FILE_COUNT.')']);
+	$origName = $file['name'];
+	$safe = safeFilename($origName);
+	$ext = strtolower(pathinfo($safe, PATHINFO_EXTENSION));
+	if (!in_array($ext, ALLOWED_EXTS)) jsonResponse(['ok'=>false,'code'=>'ext','message'=>'Unsupported file extension']);
+	$dest = BASE_UPLOAD_DIR . "/$sessionId/" . $safe;
+	if (!@move_uploaded_file($file['tmp_name'], $dest)) jsonResponse(['ok'=>false,'code'=>'perm','message'=>'Cannot move uploaded file']);
+	// Basic validation via getimagesize / Imagick
+	$valid = false;
+	if (class_exists('Imagick')) {
+		try { $tmp = new Imagick($dest); $valid = true; } catch (Exception $e) { $valid=false; }
+	}
+	if (!$valid && function_exists('getimagesize')) { $valid = (bool)@getimagesize($dest); }
+	if (!$valid) { @unlink($dest); jsonResponse(['ok'=>false,'code'=>'invalid','message'=>'Corrupted or unsupported image']); }
+	$id = bin2hex(random_bytes(6));
+	$_SESSION['files'][$id] = [
+		'name'=>$origName,
+		'saved_name'=>$safe,
+		'original_size'=>filesize($dest),
+		'status'=>'uploaded'
+	];
+	jsonResponse(['ok'=>true,'id'=>$id,'name'=>$origName,'size'=>filesize($dest)]);
+}
+elseif ($action === 'compress' && $_SERVER['REQUEST_METHOD']==='POST') {
+	validateCsrf();
+	$id = $_POST['id'] ?? '';
+	$quality = (int)($_POST['quality'] ?? DEFAULT_JPEG_QUALITY);
+	$convertWebp = isset($_POST['convert_webp']) && $_POST['convert_webp']=='1';
+	$quality = max(MIN_JPEG_QUALITY, min(MAX_JPEG_QUALITY, $quality));
+	if (!isset($_SESSION['files'][$id])) jsonResponse(['ok'=>false,'code'=>'id','message'=>'File ID not found']);
+	$meta = &$_SESSION['files'][$id];
+	$srcPath = BASE_UPLOAD_DIR . "/$sessionId/" . $meta['saved_name'];
+	if (!is_file($srcPath)) jsonResponse(['ok'=>false,'code'=>'missing','message'=>'Uploaded file missing']);
+	$ext = strtolower(pathinfo($srcPath, PATHINFO_EXTENSION));
+	$destExt = $convertWebp ? 'webp' : $ext;
+	$compressedName = pathinfo($meta['saved_name'], PATHINFO_FILENAME) . '_compressed.' . $destExt;
+	$destPath = BASE_COMPRESS_DIR . "/$sessionId/" . $compressedName;
+	$metaExtra = [];
+	$result = compressImage($srcPath, $destPath, $quality, $convertWebp, $metaExtra);
+	if (!$result['ok']) {
+		$meta['status'] = 'error';
+		$meta['error'] = $result['message'];
+		jsonResponse($result);
+	}
+	$newSize = $result['newSize'];
+	$percentSaved = $result['originalSize']>0 ? round((1 - ($newSize/$result['originalSize']))*100) : 0;
+	$meta['status']='done';
+	$meta['compressed_name']=$compressedName;
+	$meta['compressed_size']=$newSize;
+	$meta['percent_saved']=$percentSaved;
+	// thumbnail
+	$thumbName = 'thumbs/' . pathinfo($compressedName, PATHINFO_FILENAME) . '_thumb.jpg';
+	$thumbPath = BASE_COMPRESS_DIR . "/$sessionId/" . $thumbName;
+	createThumbnail($destPath, $thumbPath);
+	jsonResponse([
+		'ok'=>true,
+		'name'=>$meta['name'],
+		'compressedName'=>$compressedName,
+		'originalSize'=>$result['originalSize'],
+		'newSize'=>$newSize,
+		'percentSaved'=>$percentSaved,
+		'downloadUrl'=>'compressed/'.$sessionId.'/'.$compressedName,
+		'thumbUrl'=> (is_file($thumbPath)? 'compressed/'.$sessionId.'/'.$thumbName : null)
+	]);
+}
+elseif ($action === 'zip' && $_SERVER['REQUEST_METHOD']==='POST') {
+	validateCsrf();
+	$start = isset($_POST['start']);
+	if ($start) {
+		$res = beginZipBuild();
+		jsonResponse($res);
+	} else {
+		jsonResponse(['ok'=>false,'code'=>'param','message'=>'Missing start parameter']);
+	}
+}
+elseif ($action === 'progress' && ($_GET['type'] ?? '')==='zip') {
+	$res = progressZip();
+	jsonResponse($res);
+}
+elseif ($action === 'cleanup' && $_SERVER['REQUEST_METHOD']==='POST') {
+	validateCsrf();
+	$res = cleanupSession();
+	jsonResponse($res);
+}
+elseif ($action === 'thumb') {
+	// serve thumbnail securely
+	$id = $_GET['id'] ?? '';
+	if (!isset($_SESSION['files'][$id])) { http_response_code(404); exit; }
+	$meta = $_SESSION['files'][$id];
+	if (($meta['status'] ?? '') !== 'done') { http_response_code(404); exit; }
+	$sessionId = $_SESSION['session_id'];
+	$thumbPattern = BASE_COMPRESS_DIR . "/$sessionId/thumbs/" . pathinfo($meta['compressed_name'], PATHINFO_FILENAME) . '_thumb.jpg';
+	if (!is_file($thumbPattern)) { http_response_code(404); exit; }
+	header('Content-Type: image/jpeg');
+	readfile($thumbPattern); exit;
+}
+
+// ----------------------------- PAGE RENDER -----------------------------
+$libName = detectLibrary();
+// HTML output below (full single-page app)
+?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8" />
+	<meta name="viewport" content="width=device-width,initial-scale=1" />
+	<title>Online Image Compressor — Drag & Drop, Queue, ZIP Download</title>
+	<meta name="description" content="Free online image compressor with drag & drop, queue processing, quality control, and ZIP download. Compress JPEG, PNG, WebP, GIF efficiently." />
+	<link rel="canonical" href="<?php echo htmlspecialchars($_SERVER['REQUEST_SCHEME'] ?? 'http'); ?>://<?php echo htmlspecialchars($_SERVER['HTTP_HOST'] ?? 'localhost'); ?><?php echo htmlspecialchars(strtok($_SERVER['REQUEST_URI'],'?')); ?>" />
+	<!-- Open Graph -->
+	<meta property="og:title" content="Online Image Compressor — Drag & Drop, Queue, ZIP Download" />
+	<meta property="og:description" content="Compress images (JPEG, PNG, WebP, GIF) online. Drag & drop multiple files, adjust quality, download individually or as ZIP." />
+	<meta property="og:type" content="website" />
+	<meta property="og:url" content="<?php echo htmlspecialchars($_SERVER['REQUEST_SCHEME'] ?? 'http'); ?>://<?php echo htmlspecialchars($_SERVER['HTTP_HOST'] ?? 'localhost'); ?><?php echo htmlspecialchars(strtok($_SERVER['REQUEST_URI'],'?')); ?>" />
+	<meta property="og:image" content="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAACXBIWXMAAAsSAAALEgHS3X78AAABKUlEQVR4nO2XsQ2DMBBF3xR0EAdwADcAB3AANyADdAAHcAA3uKOq9qUtp1b6qaQ4ZFr8ljIZgAEyQ7AIwC8tk47dHlUvB+TiIiI/4CVwAIwAMwDck81gBLT4BoBVlOs1QKZJ6gP4Ed6BnGGLgEXoJ3iMhm4BD6BF2jIZuAQuhJdoyGbgEPoEXaMhm4BC7aWimC9AJnsvZrcx+gEy1x32XGYBVL3cwmSAjH7mmUjEg5YDWLDktnpq9Vfe9yhcEHfLhSkb14gHkLJptt8oWgeAX2Q4vQnAAdwADcGAEBD/AC8ATiIiIrgCvA9xC9irR6Zrqj1u1FwkPhXEzZfbbplv95iDvKzZfQaQ5gAEyQ7AIwAM5L+D2uDz4OB04AAAAASUVORK5CYII=" />
+	<!-- Twitter Card -->
+	<meta name="twitter:card" content="summary_large_image" />
+	<meta name="twitter:title" content="Online Image Compressor — Drag & Drop, Queue, ZIP Download" />
+	<meta name="twitter:description" content="Compress images online with quality control and ZIP download." />
+	<meta name="twitter:image" content="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAACXBIWXMAAAsSAAALEgHS3X78AAABKUlEQVR4nO2XsQ2DMBBF3xR0EAdwADcAB3AANyADdAAHcAA3uKOq9qUtp1b6qaQ4ZFr8ljIZgAEyQ7AIwC8tk47dHlUvB+TiIiI/4CVwAIwAMwDck81gBLT4BoBVlOs1QKZJ6gP4Ed6BnGGLgEXoJ3iMhm4BD6BF2jIZuAQuhJdoyGbgEPoEXaMhm4BC7aWimC9AJnsvZrcx+gEy1x32XGYBVL3cwmSAjH7mmUjEg5YDWLDktnpq9Vfe9yhcEHfLhSkb14gHkLJptt8oWgeAX2Q4vQnAAdwADcGAEBD/AC8ATiIiIrgCvA9xC9irR6Zrqj1u1FwkPhXEzZfbbplv95iDvKzZfQaQ5gAEyQ7AIwAM5L+D2uDz4OB04AAAAASUVORK5CYII=" />
+	<script type="application/ld+json">{
+		"@context":"https://schema.org","@type":"WebApplication","name":"Online Image Compressor","description":"Free online image compressor supporting JPEG, PNG, WebP, GIF with drag & drop queue and ZIP download.","applicationCategory":"Multimedia","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+	</script>
+	<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" integrity="sha384-9NDikNqJvT+0nDr5GII4JESyqCCpt5TR1+t0NenE2no0RvrRZtGJPD7Wv5ManIeZ" crossorigin="anonymous">
+	<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.css">
+	<style>
+		body { background:#f8f9fa; }
+		.dropzone { border:2px dashed #6c757d; padding:2.5rem; text-align:center; transition:.2s; background:#fff; }
+		.dropzone.dragover { background:#e9f5ff; border-color:#0d6efd; }
+		.file-item { position:relative; display:flex; align-items:flex-start; }
+		.file-thumb { width:50px; height:50px; object-fit:cover; border-radius:4px; background:#dee2e6; }
+		.progress { height:6px; }
+		.status-badge { font-size:.75rem; }
+		.visually-hidden-focusable:focus { clip:auto!important; width:auto!important; height:auto!important; }
+		.queue-scroll { max-height:340px; overflow-y:auto; }
+		footer { font-size:.85rem; }
+		.quality-label { font-weight:600; }
+		.thumb-placeholder { width:50px; height:50px; display:flex; align-items:center; justify-content:center; background:#e2e6ea; border-radius:4px; font-size:1.25rem; color:#6c757d; }
+		.aria-live-region { position:absolute; left:-9999px; width:1px; height:1px; overflow:hidden; }
+	</style>
+</head>
+<body>
+<header class="py-4 bg-white border-bottom mb-4">
+	<div class="container">
+		<h1 class="h3 mb-0">Online Image Compressor</h1>
+		<p class="text-muted mb-0">Drag & drop multiple images, compress with adjustable quality, download individually or as a ZIP.</p>
+	</div>
+</header>
+<main class="container mb-5" id="main-content">
+	<div class="row g-4">
+		<section class="col-12 col-lg-5">
+			<div id="dropzone" class="dropzone rounded" role="region" aria-label="Image file dropzone" tabindex="0">
+				<i class="bi bi-cloud-arrow-up display-5 text-primary"></i>
+				<p class="mt-3 mb-1 fw-semibold">Drag & Drop Images Here</p>
+				<p class="text-muted small mb-3">or select files below (JPEG, PNG, WebP, GIF<?php if ($libName==='imagick') echo ', HEIC, SVG'; ?>)</p>
+				<input type="file" id="fileInput" class="form-control" multiple accept="image/*" aria-label="File input" />
+				<div class="mt-3">
+					<label for="qualityRange" class="form-label quality-label">Quality <span id="qualityValue"><?php echo DEFAULT_JPEG_QUALITY; ?></span></label>
+					<input type="range" id="qualityRange" min="<?php echo MIN_JPEG_QUALITY; ?>" max="<?php echo MAX_JPEG_QUALITY; ?>" value="<?php echo DEFAULT_JPEG_QUALITY; ?>" class="form-range" />
+					<div class="form-check form-switch mt-2">
+						<input class="form-check-input" type="checkbox" id="convertWebp" />
+						<label class="form-check-label" for="convertWebp">Convert all to WebP</label>
+					</div>
+				</div>
+				<div class="mt-3 d-flex gap-2">
+					<button id="startBtn" class="btn btn-sm btn-primary" type="button">Start Processing</button>
+					<button id="clearBtn" class="btn btn-sm btn-outline-secondary" type="button">Clear Session</button>
+				</div>
+				<p class="mt-3 mb-0 small text-muted">Library: <strong><?php echo strtoupper($libName); ?></strong> | Max file size: 20 MB | Files limit: <?php echo MAX_FILE_COUNT; ?></p>
+			</div>
+		</section>
+		<section class="col-12 col-lg-7">
+			<div class="card shadow-sm">
+				<div class="card-header d-flex justify-content-between align-items-center">
+					<h2 class="h6 mb-0">Queue</h2>
+					<div>
+						<button id="zipBtn" class="btn btn-sm btn-success" type="button" disabled><i class="bi bi-file-zip"></i> Download ZIP</button>
+						<span id="zipProgressWrap" class="ms-2" style="display:none;" aria-live="polite">
+							<div class="spinner-border spinner-border-sm text-success" role="status" aria-label="ZIP in progress"></div>
+							<span id="zipPercent" class="small ms-1">0%</span>
+						</span>
+					</div>
+				</div>
+				<div class="card-body p-0">
+					<ul id="fileList" class="list-group list-group-flush queue-scroll" aria-label="Processing queue"></ul>
+				</div>
+			</div>
+		</section>
+	</div>
+	<div class="aria-live-region" aria-live="polite" id="liveStatus"></div>
+</main>
+<footer class="border-top py-3 bg-white">
+	<div class="container d-flex flex-wrap justify-content-between align-items-center">
+		<span class="text-muted">&copy; <?php echo date('Y'); ?> Image Compressor (Session <?php echo htmlspecialchars($sessionId); ?>)</span>
+		<nav class="small" aria-label="Footer navigation">
+			<a href="#main-content" class="text-decoration-none me-3">Top</a>
+			<button class="btn btn-link p-0 text-decoration-none" type="button" id="announceBtn">Announce Status</button>
+		</nav>
+	</div>
+</footer>
+<div class="modal fade" id="errorModal" tabindex="-1" aria-hidden="true" aria-labelledby="errorModalLabel">
+  <div class="modal-dialog">
+	<div class="modal-content">
+	  <div class="modal-header">
+		<h5 class="modal-title" id="errorModalLabel">Error Details</h5>
+		<button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+	  </div>
+	  <div class="modal-body" id="errorModalBody"></div>
+	  <div class="modal-footer">
+		<button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+	  </div>
+	</div>
+  </div>
+</div>
+<script src="https://code.jquery.com/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv2lV7l+u/3RJp8q1j6iKu9C2UnJl0+8=" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js" integrity="sha384-ENjdO4Dr2bkBIFxQpeoTz1HIcje39Wm4jDKdf19U8gI4ddQ3lXWZ8yqN0RSJoZ+n" crossorigin="anonymous"></script>
+<script>
+// ----------------------------- CLIENT JS -----------------------------
+const csrfToken = <?php echo json_encode($csrfToken); ?>;
+let queue = []; // {file:File, id:null|serverId, state:'queued'|'uploading'|'compressing'|'done'|'error', errorMsg:''}
+let processing = false;
+let autoStart = false; // manual start
+let zipPolling = false;
+
+function announce(msg){ $('#liveStatus').text(msg); }
+
+function humanSize(bytes){
+	const units=['B','KB','MB','GB'];
+	let i=0, s=bytes; while(s>=1024 && i<units.length-1){ s/=1024; i++; }
+	return (s<10? s.toFixed(2):Math.round(s))+' '+units[i];
+}
+
+function addFiles(files){
+	for(const f of files){
+		if(queue.length >= <?php echo MAX_FILE_COUNT; ?>){ announce('File limit reached'); break; }
+		if(f.size > <?php echo MAX_FILE_SIZE; ?>){ createListItem({name:f.name,size:f.size,state:'error',errorMsg:'File exceeds 20 MB limit (client)'}); continue; }
+		const qItem = {file:f,id:null,state:'queued',errorMsg:'',size:f.size};
+		queue.push(qItem);
+		createListItem(qItem);
+	}
+	if(autoStart) startProcessing();
+}
+
+function createListItem(item){
+	const li = $('<li class="list-group-item file-item" tabindex="0"></li>');
+	li.data('item', item);
+	const thumb = $('<div class="thumb-placeholder me-2" aria-hidden="true"><i class="bi bi-image"></i></div>');
+	const title = $('<div class="flex-grow-1"></div>');
+	const nameSpan = $('<div class="fw-semibold text-truncate"></div>').text(item.file? item.file.name : (item.name||'Unknown'));
+	const sizeSpan = $('<div class="small text-muted"></div>').text(humanSize(item.size||0));
+	const statusBadge = $('<span class="badge bg-secondary status-badge ms-2">Queued</span>');
+	const actions = $('<div class="ms-2 d-flex align-items-center gap-2"></div>');
+	const removeBtn = $('<button type="button" class="btn btn-sm btn-outline-danger" aria-label="Remove"><i class="bi bi-x"></i></button>');
+	removeBtn.on('click',()=>{ if(item.state==='queued'){ queue = queue.filter(q=>q!==item); li.remove(); updateZipBtn(); } });
+	const downloadBtn = $('<a class="btn btn-sm btn-outline-success d-none" target="_blank" rel="noopener" aria-label="Download compressed"><i class="bi bi-download"></i></a>');
+	const errorBtn = $('<button type="button" class="btn btn-sm btn-outline-warning d-none" aria-label="Show error"><i class="bi bi-exclamation-triangle"></i></button>');
+	errorBtn.on('click',()=>{ $('#errorModalBody').text(item.errorMsg||'Unknown error'); new bootstrap.Modal(document.getElementById('errorModal')).show(); });
+	actions.append(removeBtn, downloadBtn, errorBtn);
+	const progressWrap = $('<div class="progress mt-2" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="progress-bar" style="width:0%"></div></div>');
+	title.append(nameSpan,sizeSpan,statusBadge,progressWrap);
+	li.append(thumb,title,actions);
+	$('#fileList').append(li);
+	item._elements = {li, statusBadge, progressWrap, downloadBtn, errorBtn, thumb};
+	return li;
+}
+
+function setStatus(item, status, badgeClass){
+	item.state = status;
+	item._elements.statusBadge.removeClass('bg-secondary bg-info bg-primary bg-success bg-danger bg-warning').addClass(badgeClass).text(status.charAt(0).toUpperCase()+status.slice(1));
+	announce(item.file? item.file.name+': '+status : status);
+}
+
+function updateProgress(item, percent){
+	item._elements.progressWrap.attr('aria-valuenow', percent); item._elements.progressWrap.find('.progress-bar').css('width', percent+'%');
+}
+
+function startProcessing(){ if(processing) return; processing = true; processNext(); }
+
+function processNext(){
+	const next = queue.find(q=> q.state==='queued');
+	if(!next){ processing=false; updateZipBtn(); return; }
+	uploadFile(next).then(()=> compressFile(next)).catch(()=>{}).finally(()=>{ processNext(); });
+}
+
+function uploadFile(item){
+	return new Promise((resolve,reject)=>{
+		setStatus(item,'uploading','bg-info'); updateProgress(item,10);
+		const fd = new FormData();
+		fd.append('file', item.file); fd.append('csrf', csrfToken);
+		$.ajax({url:'?action=upload',method:'POST',data:fd,processData:false,contentType:false})
+		.done(res=>{
+			if(res.ok){ item.id = res.id; setStatus(item,'compressing','bg-primary'); updateProgress(item,40); resolve(); }
+			else { item.errorMsg = res.message; setStatus(item,'error','bg-danger'); item._elements.errorBtn.removeClass('d-none'); reject(); }
+		})
+		.fail(()=>{ item.errorMsg='Network error during upload'; setStatus(item,'error','bg-danger'); item._elements.errorBtn.removeClass('d-none'); reject(); });
+	});
+}
+
+function compressFile(item){
+	return new Promise((resolve,reject)=>{
+		if(!item.id){ reject(); return; }
+		updateProgress(item,60);
+		$.ajax({url:'?action=compress',method:'POST',data:{id:item.id,quality:$('#qualityRange').val(),convert_webp:$('#convertWebp').is(':checked')?1:0,csrf:csrfToken}})
+		.done(res=>{
+			if(res.ok){
+				updateProgress(item,100);
+				setStatus(item,'done','bg-success');
+				item._elements.downloadBtn.attr('href',res.downloadUrl).removeClass('d-none');
+				// display size savings
+				const saving = res.percentSaved;
+				const sizeInfo = humanSize(res.originalSize)+' → '+humanSize(res.newSize)+' ('+saving+'% saved)';
+				item._elements.li.find('.small.text-muted').text(sizeInfo);
+				if(res.thumbUrl){
+					const img = $('<img alt="Thumbnail for '+(item.file?item.file.name:'')+'" loading="lazy" class="file-thumb" />').attr('src',res.thumbUrl);
+					item._elements.thumb.replaceWith(img); item._elements.thumb = img;
+				}
+				updateZipBtn();
+				resolve();
+			} else {
+				item.errorMsg = res.message || 'Compression failed';
+				setStatus(item,'error','bg-danger'); item._elements.errorBtn.removeClass('d-none'); updateProgress(item,100); reject();
+			}
+		})
+		.fail(()=>{ item.errorMsg='Network error during compression'; setStatus(item,'error','bg-danger'); item._elements.errorBtn.removeClass('d-none'); reject(); });
+	});
+}
+
+function updateZipBtn(){
+	const successCount = queue.filter(q=>q.state==='done').length;
+	$('#zipBtn').prop('disabled', successCount===0 || zipPolling);
+}
+
+function startZip(){
+	zipPolling = true; updateZipBtn(); $('#zipProgressWrap').show(); $('#zipPercent').text('0%');
+	$.post('?action=zip',{start:1,csrf:csrfToken}).done(res=>{
+		if(!res.ok){ announce(res.message||'ZIP start failed'); zipPolling=false; $('#zipProgressWrap').hide(); updateZipBtn(); return; }
+		pollZip();
+	}).fail(()=>{ announce('ZIP start network error'); zipPolling=false; $('#zipProgressWrap').hide(); updateZipBtn(); });
+}
+
+function pollZip(){
+	if(!zipPolling) return;
+	$.getJSON('?action=progress&type=zip').done(res=>{
+		if(res.ok){ $('#zipPercent').text(res.percent+'%');
+			if(res.percent>=100 && res.zipUrl){
+				zipPolling=false; updateZipBtn(); announce('ZIP ready');
+				const a = document.createElement('a'); a.href = res.zipUrl; a.download = ''; document.body.appendChild(a); a.click(); a.remove();
+				setTimeout(()=>$('#zipProgressWrap').hide(), 1000);
+			} else { setTimeout(pollZip, 600); }
+		} else { announce(res.message||'ZIP progress error'); zipPolling=false; $('#zipProgressWrap').hide(); updateZipBtn(); }
+	}).fail(()=>{ announce('ZIP progress network error'); zipPolling=false; $('#zipProgressWrap').hide(); updateZipBtn(); });
+}
+
+function clearSession(){
+	if(zipPolling) return;
+	$.post('?action=cleanup',{csrf:csrfToken}).done(res=>{
+		if(res.ok){ queue=[]; $('#fileList').empty(); updateZipBtn(); announce('Session cleared'); }
+		else announce(res.message||'Cleanup failed');
+	}).fail(()=>announce('Network error during cleanup'));
+}
+
+// Drag & drop handlers
+$('#dropzone').on('drag dragstart dragend dragover dragenter dragleave drop', e=>{ e.preventDefault(); e.stopPropagation(); });
+$('#dropzone').on('dragover dragenter',()=>$('#dropzone').addClass('dragover'));
+$('#dropzone').on('dragleave dragend drop',()=>$('#dropzone').removeClass('dragover'));
+$('#dropzone').on('drop', e=>{ const dt = e.originalEvent.dataTransfer; if(dt && dt.files) addFiles(dt.files); });
+$('#fileInput').on('change', e=>{ addFiles(e.target.files); e.target.value=''; });
+$('#startBtn').on('click', ()=>{ autoStart=true; startProcessing(); });
+$('#zipBtn').on('click', startZip);
+$('#clearBtn').on('click', clearSession);
+$('#qualityRange').on('input change', function(){ $('#qualityValue').text(this.value); });
+$('#announceBtn').on('click',()=>announce('Queue size: '+queue.length));
+
+// Keyboard support: Enter to trigger start when focused on dropzone
+$('#dropzone').on('keydown', e=>{ if(e.key==='Enter' || e.key===' '){ e.preventDefault(); $('#fileInput').click(); }});
+
+// Auto-start accessible message
+announce('Ready. Library: <?php echo strtoupper($libName); ?>');
+</script>
+</body>
+</html>
+/////////////////////////////////////////////////
+"""News Aggregation and AI Article Generation Script
+
+Workflow:
+1. Read input CSV: primary_keyword | comma_separated_urls
+2. For each row:
+   a. Fetch and extract readable text from each URL (retry + timeout)
+   b. Merge/clean content into a combined source corpus
+   c. Query YouTube Data API for related videos (top N) -> build <iframe> embed codes
+   d. Query Twitter (X) API for related tweets (search recent) -> build embed blockquotes
+   e. Build a comprehensive SEO-oriented prompt including:
+        - Primary keyword
+        - Source summaries
+        - Instructions to embed provided video/tweet codes at natural positions
+        - On-page SEO requirements (title H1, meta-like intro, subheadings, schema suggestion, FAQ, internal link anchor suggestions)
+   f. Call local LLaMA model via Ollama HTTP API (or fallback to text generation placeholder) to produce HTML body content.
+   g. Write output CSV row: primary keyword | urls | generated title | generated HTML content
+
+Prerequisites:
+- Python 3.10+
+- pip install -r requirements.txt
+- Environment variables:
+    YOUTUBE_API_KEY=... (YouTube Data API v3)
+    TWITTER_BEARER_TOKEN=... (Twitter API v2 recent search)
+- Ollama installed locally with a LLaMA model pulled, e.g.:
+    ollama pull llama3
+
+Run:
+    python auto1.py --input input.csv --output output.csv
+
+Note:
+If APIs are unavailable, script will continue with empty embed lists.
+"""
+from __future__ import annotations
+import csv
+import os
+import re
+import sys
+import time
+import json
+import logging
+import argparse
+from dataclasses import dataclass, field
+from typing import List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+import requests
+from bs4 import BeautifulSoup
+
+# ---------------- Logging Configuration ----------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger(__name__)
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+)
+HEADERS = {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"}
+
+# ---------------- Data Classes ----------------
+@dataclass
+class FetchedContent:
+    url: str
+    text: str
+    success: bool
+    error: Optional[str] = None
+
+@dataclass
+class MediaEmbeds:
+    videos: List[str] = field(default_factory=list)  # list of iframe HTML snippets
+    tweets: List[str] = field(default_factory=list)  # list of blockquote or anchor HTML snippets
+
+# ---------------- Utility Functions ----------------
+
+def read_input_csv(path: str) -> List[Tuple[str, List[str]]]:
+    rows: List[Tuple[str, List[str]]] = []
+    with open(path, newline='', encoding='utf-8') as f:
+        reader = csv.reader(f, delimiter='|')
+        for raw in reader:
+            if not raw or len(raw) < 2:
+                continue
+            primary = raw[0].strip()
+            urls_segment = raw[1].strip()
+            if not primary or not urls_segment:
+                continue
+            urls = [u.strip() for u in urls_segment.split(',') if u.strip()]
+            if urls:
+                rows.append((primary, urls))
+    return rows
+
+def fetch_url(url: str, timeout: int = 12, max_chars: int = 12000) -> FetchedContent:
+    try:
+        resp = requests.get(url, headers=HEADERS, timeout=timeout)
+        if resp.status_code != 200:
+            return FetchedContent(url=url, text="", success=False, error=f"status {resp.status_code}")
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        # Remove scripts/styles
+        for tag in soup(['script', 'style', 'noscript', 'header', 'footer', 'form', 'aside']):
+            tag.decompose()
+        text = ' '.join(soup.stripped_strings)
+        # Basic cleanup
+        text = re.sub(r"\s+", " ", text)
+        if len(text) > max_chars:
+            text = text[:max_chars] + "..."
+        return FetchedContent(url=url, text=text, success=True)
+    except Exception as e:  # noqa: BLE001
+        return FetchedContent(url=url, text="", success=False, error=str(e))
+
+def fetch_all(urls: List[str], workers: int = 6) -> List[FetchedContent]:
+    results: List[FetchedContent] = []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        future_map = {ex.submit(fetch_url, u): u for u in urls}
+        for fut in as_completed(future_map):
+            results.append(fut.result())
+    return results
+
+def summarize_sources(contents: List[FetchedContent], primary_keyword: str) -> str:
+    parts = []
+    for c in contents:
+        if not c.success or not c.text:
+            continue
+        # Light summarization: truncate and annotate source
+        snippet = c.text[:800]
+        parts.append(f"Source: {c.url}\nSnippet: {snippet}\n")
+    if not parts:
+        return f"No successful sources fetched for {primary_keyword}."\
+            + " Provide general background and craft article from known context."  # noqa: E501
+    return "\n\n".join(parts)
+
+# ---------------- External API Integrations ----------------
+
+def search_youtube(query: str, max_results: int = 3) -> List[str]:
+    api_key = os.getenv("YOUTUBE_API_KEY")
+    if not api_key:
+        logger.warning("YOUTUBE_API_KEY not set; skipping YouTube search.")
+        return []
+    url = (
+        "https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&"\
+        f"q={requests.utils.quote(query)}&maxResults={max_results}&key={api_key}"
+    )
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        items = data.get('items', [])
+        embeds: List[str] = []
+        for it in items:
+            vid = it.get('id', {}).get('videoId')
+            if not vid:
+                continue
+            embeds.append(
+                f'<div class="video-embed"><iframe width="560" height="315" '
+                f'src="https://www.youtube.com/embed/{vid}" '
+                'title="YouTube video" frameborder="0" allow="accelerometer; autoplay; clipboard-write; '
+                'encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe></div>'
+            )
+        return embeds
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"YouTube API error: {e}")
+        return []
+
+def search_twitter(query: str, max_results: int = 3) -> List[str]:
+    bearer = os.getenv("TWITTER_BEARER_TOKEN")
+    if not bearer:
+        logger.warning("TWITTER_BEARER_TOKEN not set; skipping Twitter search.")
+        return []
+    search_url = "https://api.twitter.com/2/tweets/search/recent"
+    params = {
+        "query": query,
+        "max_results": min(max_results, 10),
+        "tweet.fields": "author_id,created_at,lang,public_metrics"}
+    headers = {"Authorization": f"Bearer {bearer}"}
+    try:
+        r = requests.get(search_url, params=params, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        tweets = data.get('data', [])
+        embeds: List[str] = []
+        for t in tweets[:max_results]:
+            tid = t.get('id')
+            if not tid:
+                continue
+            # Simple embed via blockquote referencing tweet URL; actual embed would need script.
+            tweet_url = f"https://twitter.com/i/web/status/{tid}"
+            embeds.append(
+                '<blockquote class="twitter-tweet"><a href="' + tweet_url + '"></a></blockquote>'
+            )
+        # Include script tag once (consumer can deduplicate later if merging many articles)
+        if embeds:
+            embeds.append('<script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>')
+        return embeds
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Twitter API error: {e}")
+        return []
+
+# ---------------- LLM Interaction ----------------
+
+def build_prompt(primary_keyword: str, source_summary: str, embeds: MediaEmbeds) -> str:
+    video_placeholders = "\n".join(f"[VIDEO_EMBED_{i}] {emb}" for i, emb in enumerate(embeds.videos, start=1))
+    tweet_placeholders = "\n".join(f"[TWEET_EMBED_{i}] {emb}" for i, emb in enumerate(embeds.tweets, start=1))
+    instructions = f"""
+You are an elite investigative news journalist and SEO strategist.
+Task: Using the aggregated source snippets below, craft a completely original, human-quality, balanced, factual news article about: {primary_keyword}.
+Mandatory SEO & Structure Requirements:
+- Output must be valid HTML fragment for <body> (no <html>, <head>, or <body> tags) using semantic tags.
+- Start with an <h1> containing a compelling, keyword-optimized title (return EXACT title text later separately).
+- Include an introductory <p> with concise summary and key facts.
+- Use multiple <h2>/<h3> subheadings with keyword variations, chronology, impact, stakeholder reactions.
+- Naturally integrate provided video and tweet embed placeholders at contextually appropriate points (do not dump them together). Keep surrounding explanatory text.
+- Provide a bulleted Key Points section (<ul>) early.
+- Include a short FAQ section (2-4 questions) with schema-friendly structure.
+- Include an internal linking suggestions section as HTML comments: <!-- INTERNAL_LINK: anchor text --> for 3-5 anchors.
+- End with a concise forward-looking analysis paragraph.
+On-Page SEO Guidelines:
+- Use primary keyword in first 120 characters.
+- Use synonyms / related entities, avoid keyword stuffing.
+- Maintain neutral tone and attribute claims.
+- Avoid sensationalism; maintain journalistic integrity.
+Embedding Media:
+Integrate each [VIDEO_EMBED_X] and [TWEET_EMBED_X] code at a natural narrative spot, removing the placeholder label but keeping the HTML snippet.
+Do NOT alter the iframe or blockquote code.
+Return Format:
+<ARTICLE_HTML> ... full HTML ... </ARTICLE_HTML>
+<TITLE>Exact Title Text</TITLE>
+Source Material:
+{source_summary}
+Embeds Provided:
+Videos:\n{video_placeholders or 'None'}\nTweets:\n{tweet_placeholders or 'None'}
+"""
+    return instructions.strip()
+
+def call_local_llama(prompt: str, model: str = "llama3", max_tokens: int = 1800) -> Tuple[str, str]:
+    """Call local Ollama server for generation. Return (html, title)."""
+    base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    endpoint = f"{base_url}/api/generate"
+    payload = {"model": model, "prompt": prompt, "stream": False}
+    try:
+        r = requests.post(endpoint, json=payload, timeout=60)
+        r.raise_for_status()
+        data = r.json()
+        full = data.get('response', '')
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"Ollama generation failed: {e}; returning placeholder content.")
+        full = "<ARTICLE_HTML><h1>Placeholder Title</h1><p>Failed to generate content.</p></ARTICLE_HTML><TITLE>Placeholder Title</TITLE>"
+    # Parse returned markers
+    html_match = re.search(r"<ARTICLE_HTML>([\s\S]*?)</ARTICLE_HTML>", full)
+    title_match = re.search(r"<TITLE>([\s\S]*?)</TITLE>", full)
+    article_html = html_match.group(1).strip() if html_match else full
+    title = title_match.group(1).strip() if title_match else "Untitled"
+    return article_html, title
+
+# ---------------- Main Processing ----------------
+
+def process_record(primary_keyword: str, urls: List[str]) -> Tuple[str, str, str, str]:
+    logger.info(f"Processing keyword '{primary_keyword}' with {len(urls)} URLs")
+    fetched = fetch_all(urls)
+    for fc in fetched:
+        if not fc.success:
+            logger.warning(f"Failed fetch {fc.url}: {fc.error}")
+    source_summary = summarize_sources(fetched, primary_keyword)
+
+    # Media searches (best-effort)
+    video_embeds = search_youtube(primary_keyword, max_results=3)
+    tweet_embeds = search_twitter(primary_keyword, max_results=3)
+    embeds = MediaEmbeds(videos=video_embeds, tweets=tweet_embeds)
+
+    prompt = build_prompt(primary_keyword, source_summary, embeds)
+    html_body, title = call_local_llama(prompt)
+    urls_joined = ",".join(urls)
+    return primary_keyword, urls_joined, title, html_body
+
+def write_output_csv(path: str, rows: List[Tuple[str, str, str, str]]) -> None:
+    with open(path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f, delimiter='|')
+        writer.writerow(["primary_keyword", "source_urls", "generated_title", "generated_html_body"])
+        for r in rows:
+            writer.writerow(r)
+
+# ---------------- CLI ----------------
+
+def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Aggregate news sources and generate AI article.")
+    p.add_argument('--input', required=True, help='Input CSV path (primary|url1,url2)')
+    p.add_argument('--output', required=True, help='Output CSV path')
+    p.add_argument('--model', default='llama3', help='Ollama model name')
+    p.add_argument('--max-records', type=int, default=None, help='Limit number of records processed')
+    return p.parse_args(argv)
+
+def main():
+    args = parse_args()
+    records = read_input_csv(args.input)
+    if args.max_records is not None:
+        records = records[: args.max_records]
+    if not records:
+        logger.error('No valid input records found.')
+        sys.exit(1)
+    output_rows = []
+    for primary, urls in records:
+        try:
+            pk, url_list, title, html = process_record(primary, urls)
+            output_rows.append((pk, url_list, title, html))
+            time.sleep(1)  # polite pause
+        except Exception as e:  # noqa: BLE001
+            logger.exception(f"Failed processing {primary}: {e}")
+    write_output_csv(args.output, output_rows)
+    logger.info(f"Wrote {len(output_rows)} records to {args.output}")
+
+if __name__ == '__main__':
+    main()
