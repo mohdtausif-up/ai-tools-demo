@@ -1,0 +1,7 @@
+﻿:root { --bg:#0b0f14; --fg:#e6eef7; }
+    body { background: var(--bg); color: var(--fg); }
+    .card { background:#0f1520; color:var(--fg); border-color:#2a3a4d; }
+    .calendar { display:grid; grid-template-columns: repeat(7,1fr); gap:5px; }
+    .day { aspect-ratio:1; background:#1a2332; border:1px solid #2a3a4d; display:flex; align-items:center; justify-content:center; border-radius:4px; }
+    .day.today { background:#4da3ff; color:#000; font-weight:bold; }
+    .day.other-month { opacity:0.3; }

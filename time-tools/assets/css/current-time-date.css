@@ -1,0 +1,5 @@
+﻿:root { --bg: #0b0f14; --fg: #e6eef7; --accent: #4da3ff; --card-bg: #0f1520; --border: #2a3a4d; }
+    body { background: var(--bg); color: var(--fg); min-height: 100vh; }
+    .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: 0.75rem; }
+    .time-display { font-size: clamp(3rem, 10vw, 5rem); font-weight: 700; font-family: 'Courier New', monospace; color: var(--accent); }
+    .form-select { background: var(--card-bg); color: var(--fg); border-color: var(--border); }

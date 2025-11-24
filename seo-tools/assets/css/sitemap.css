@@ -1,0 +1,27 @@
+/* sitemap.css - SEO Tools Sitemap Page Styles */
+main {
+  max-width: 900px;
+  margin: 2rem auto;
+  padding: 1rem;
+}
+h1 {
+  font-size: 2rem;
+  color: #2d3748;
+  margin-bottom: 1rem;
+}
+ul {
+  margin-top: 1.5rem;
+  margin-left: 1.5rem;
+}
+li {
+  font-size: 1rem;
+  color: #4a5568;
+  margin-bottom: 0.5rem;
+}
+a {
+  color: #3182ce;
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}

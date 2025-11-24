@@ -1,0 +1,9 @@
+﻿:root { --bg:#0b0f14; --fg:#e6eef7; --muted:#9fb3c8; --accent:#4da3ff; }
+    html,body{height:100%}
+    body { background: var(--bg); color: var(--fg); }
+    a { color: var(--accent); }
+    .hero { padding: 2.25rem 0 1rem; }
+    .result-display { font-size: clamp(1.6rem, 3vw + 1rem, 3rem); font-weight: 700; letter-spacing: .02em; }
+    .card, .form-control, .form-select { background:#0f1520; color:var(--fg); border-color:#2a3a4d; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .event-item { background:#0f1520; border-left: 3px solid var(--accent); }

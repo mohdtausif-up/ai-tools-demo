@@ -1,0 +1,196 @@
+﻿* { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #cd5c9d 0%, #c9538c 100%);
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h1 {
+      text-align: center;
+      color: white;
+      font-size: 36px;
+      margin-bottom: 15px;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    }
+    .subtitle {
+      text-align: center;
+      color: rgba(255,255,255,0.9);
+      font-size: 16px;
+      margin-bottom: 40px;
+    }
+    .main-card {
+      background: white;
+      border-radius: 15px;
+      padding: 30px;
+      margin-bottom: 30px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    .input-section {
+      margin-bottom: 30px;
+    }
+    .color-input-group {
+      display: grid;
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .color-row {
+      display: grid;
+      grid-template-columns: 150px 80px 1fr 40px;
+      gap: 10px;
+      align-items: center;
+    }
+    .color-row input[type="text"] {
+      padding: 10px;
+      border: 2px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .color-row input[type="color"] {
+      width: 80px;
+      height: 40px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .color-preview {
+      height: 40px;
+      border-radius: 8px;
+      border: 2px solid #e2e8f0;
+    }
+    .delete-btn {
+      background: #ef4444;
+      color: white;
+      border: none;
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 18px;
+      transition: background 0.2s;
+    }
+    .delete-btn:hover {
+      background: #dc2626;
+    }
+    .add-btn {
+      background: #cd5c9d;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+    .add-btn:hover {
+      background: #b34d88;
+    }
+    .options-section {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    .option-card {
+      padding: 15px;
+      border: 2px solid #e2e8f0;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .option-card.active {
+      border-color: #cd5c9d;
+      background: #fdf2f8;
+    }
+    .option-title {
+      font-weight: 600;
+      color: #334155;
+      margin-bottom: 5px;
+    }
+    .option-desc {
+      font-size: 12px;
+      color: #64748b;
+    }
+    .syntax-selector {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 20px;
+    }
+    .syntax-btn {
+      padding: 10px 20px;
+      border: 2px solid #e2e8f0;
+      background: white;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      transition: all 0.2s;
+    }
+    .syntax-btn.active {
+      background: #cd5c9d;
+      color: white;
+      border-color: #cd5c9d;
+    }
+    .output-section {
+      background: #1e293b;
+      border-radius: 10px;
+      padding: 20px;
+      position: relative;
+    }
+    .output-section pre {
+      color: #e2e8f0;
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 14px;
+      line-height: 1.6;
+      overflow-x: auto;
+      margin: 0;
+    }
+    .copy-btn {
+      position: absolute;
+      top: 15px;
+      right: 15px;
+      background: #cd5c9d;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      transition: background 0.2s;
+    }
+    .copy-btn:hover {
+      background: #b34d88;
+    }
+    .section-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #1e293b;
+      margin-bottom: 20px;
+    }
+    .toast {
+      position: fixed;
+      bottom: 30px;
+      right: 30px;
+      background: #10b981;
+      color: white;
+      padding: 15px 25px;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      animation: slideIn 0.3s ease-out;
+      z-index: 1000;
+    }
+    @keyframes slideIn {
+      from { transform: translateX(400px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }
+    .syntax-keyword { color: #c792ea; }
+    .syntax-string { color: #c3e88d; }
+    .syntax-property { color: #82aaff; }
+    .syntax-value { color: #f78c6c; }
+    .syntax-comment { color: #697098; }
+
+

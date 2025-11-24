@@ -1,0 +1,85 @@
+﻿.sitemap-container {
+    max-width: 1200px;
+    margin: 0 auto;
+  }
+  
+  .sitemap-card {
+    background: white;
+    border-radius: 20px;
+    padding: 50px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+  }
+  
+  .sitemap-card h1 {
+    font-size: 42px;
+    color: #2d3748;
+    margin-bottom: 10px;
+    text-align: center;
+  }
+  
+  .subtitle {
+    text-align: center;
+    color: #718096;
+    font-size: 16px;
+    margin-bottom: 50px;
+  }
+  
+  .sitemap-section {
+    margin-bottom: 40px;
+  }
+  
+  .sitemap-section h2 {
+    color: #667eea;
+    font-size: 24px;
+    margin-bottom: 15px;
+    padding-bottom: 10px;
+    border-bottom: 2px solid #e2e8f0;
+  }
+  
+  .sitemap-list {
+    list-style: none;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 12px;
+  }
+  
+  .sitemap-list li {
+    padding: 0;
+  }
+  
+  .sitemap-list a {
+    display: block;
+    padding: 12px 15px;
+    color: #4a5568;
+    text-decoration: none;
+    border-radius: 8px;
+    transition: all 0.3s;
+    background: #f7fafc;
+  }
+  
+  .sitemap-list a:hover {
+    background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+    color: #667eea;
+    transform: translateX(5px);
+  }
+  
+  @media (max-width: 768px) {
+    .sitemap-card {
+      padding: 30px 20px;
+    }
+    
+    .sitemap-card h1 {
+      font-size: 32px;
+    }
+    
+    .sitemap-list {
+      grid-template-columns: 1fr;
+    }
+    
+    .sitemap-section h2 {
+      font-size: 20px;
+    }
+  }
+
+

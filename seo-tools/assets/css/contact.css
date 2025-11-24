@@ -1,0 +1,48 @@
+/* contact.css - SEO Tools Contact Page Styles */
+main {
+  max-width: 700px;
+  margin: 2rem auto;
+  padding: 1rem;
+}
+h1 {
+  font-size: 2rem;
+  color: #2d3748;
+  margin-bottom: 1rem;
+}
+form {
+  background: #f7fafc;
+  border-radius: 10px;
+  padding: 1.5rem;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+}
+label {
+  font-size: 1rem;
+  color: #4a5568;
+}
+input, textarea {
+  width: 100%;
+  padding: 0.7rem;
+  margin-top: 0.3rem;
+  margin-bottom: 1rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 1rem;
+}
+button {
+  background: #3182ce;
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 0.7rem 1.5rem;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+button:hover {
+  background: #2563eb;
+}
+#contact-success {
+  color: #38b2ac;
+  margin-top: 1rem;
+  font-weight: 600;
+}

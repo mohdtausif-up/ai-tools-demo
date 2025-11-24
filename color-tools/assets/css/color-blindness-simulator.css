@@ -1,0 +1,147 @@
+﻿* { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h1 {
+      text-align: center;
+      color: white;
+      font-size: 36px;
+      margin-bottom: 15px;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    }
+    .subtitle {
+      text-align: center;
+      color: rgba(255,255,255,0.9);
+      font-size: 16px;
+      margin-bottom: 40px;
+    }
+    .control-panel {
+      background: white;
+      border-radius: 15px;
+      padding: 30px;
+      margin-bottom: 30px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    label {
+      display: block;
+      font-weight: 600;
+      margin-bottom: 10px;
+      color: #2d3748;
+      font-size: 14px;
+    }
+    input[type="color"] {
+      width: 150px;
+      height: 80px;
+      border: none;
+      border-radius: 10px;
+      cursor: pointer;
+      margin-bottom: 15px;
+    }
+    .color-inputs {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+    .color-group {
+      text-align: center;
+    }
+    .hex-display {
+      font-family: 'Courier New', monospace;
+      font-weight: 700;
+      color: #2d3748;
+      font-size: 14px;
+    }
+    .simulations-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 25px;
+    }
+    .simulation-card {
+      background: white;
+      border-radius: 15px;
+      padding: 25px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    .sim-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: #2d3748;
+      margin-bottom: 8px;
+    }
+    .sim-desc {
+      font-size: 13px;
+      color: #718096;
+      margin-bottom: 20px;
+      line-height: 1.5;
+    }
+    .sim-preview {
+      display: flex;
+      height: 120px;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-bottom: 15px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    }
+    .sim-color {
+      flex: 1;
+    }
+    .sim-values {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .value-chip {
+      background: #f7fafc;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: 'Courier New', monospace;
+      color: #2d3748;
+      font-weight: 600;
+    }
+    .info-box {
+      background: #eef2ff;
+      border-left: 4px solid #667eea;
+      padding: 20px;
+      border-radius: 8px;
+      margin-bottom: 30px;
+    }
+    .info-title {
+      font-weight: 700;
+      color: #2d3748;
+      margin-bottom: 8px;
+    }
+    .info-text {
+      font-size: 14px;
+      color: #475569;
+      line-height: 1.6;
+    }
+    .toast {
+      position: fixed;
+      top: 20px;
+      right: 20px;
+      background: #10b981;
+      color: white;
+      padding: 15px 25px;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+      opacity: 0;
+      transform: translateY(-20px);
+      transition: all 0.3s;
+      pointer-events: none;
+      z-index: 1000;
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+

@@ -1,0 +1,92 @@
+/* Index Page - Homepage Styles */
+
+.container {
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+h1 {
+  text-align: center;
+  color: white;
+  font-size: 48px;
+  margin-bottom: 20px;
+  text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+}
+
+.page-subtitle {
+  text-align: center;
+  color: rgba(255,255,255,0.95);
+  font-size: 20px;
+  margin-bottom: 50px;
+  font-weight: 300;
+}
+
+.tools-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 25px;
+  margin-bottom: 40px;
+}
+
+.tool-card {
+  background: white;
+  border-radius: 15px;
+  padding: 30px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+  transition: transform 0.3s, box-shadow 0.3s;
+  cursor: pointer;
+  text-decoration: none;
+  color: inherit;
+  display: block;
+}
+
+.tool-card:hover {
+  transform: translateY(-5px);
+  box-shadow: 0 15px 40px rgba(0,0,0,0.3);
+}
+
+.tool-icon {
+  font-size: 40px;
+  margin-bottom: 15px;
+}
+
+.tool-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: #2d3748;
+  margin-bottom: 10px;
+}
+
+.tool-desc {
+  font-size: 14px;
+  color: #718096;
+  line-height: 1.6;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 6px 12px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 12px;
+}
+
+.status-available {
+  background: #c6f6d5;
+  color: #22543d;
+}
+
+@media (max-width: 768px) {
+  h1 {
+    font-size: 36px;
+  }
+  
+  .page-subtitle {
+    font-size: 16px;
+  }
+  
+  .tools-grid {
+    grid-template-columns: 1fr;
+  }
+}

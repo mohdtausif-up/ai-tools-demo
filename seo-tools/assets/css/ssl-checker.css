@@ -1,0 +1,150 @@
+﻿* { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #0093e9 0%, #80d0c7 100%);
+      min-height: 100vh;
+      padding: 40px 20px;
+    }
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    h1 {
+      text-align: center;
+      color: white;
+      font-size: 36px;
+      margin-bottom: 15px;
+      text-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    }
+    .subtitle {
+      text-align: center;
+      color: rgba(255,255,255,0.9);
+      font-size: 16px;
+      margin-bottom: 40px;
+    }
+    .input-card {
+      background: white;
+      border-radius: 15px;
+      padding: 30px;
+      margin-bottom: 30px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    .input-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 15px;
+      align-items: center;
+    }
+    .input-field {
+      width: 100%;
+      padding: 12px;
+      border: 2px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .check-btn {
+      background: linear-gradient(135deg, #0093e9 0%, #80d0c7 100%);
+      color: white;
+      border: none;
+      padding: 12px 30px;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 700;
+      transition: transform 0.2s;
+    }
+    .check-btn:hover {
+      transform: scale(1.05);
+    }
+    .check-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .result-card {
+      background: white;
+      border-radius: 15px;
+      padding: 30px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+    }
+    .ssl-status {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 15px;
+      padding: 30px;
+      border-radius: 10px;
+      margin-bottom: 25px;
+      font-size: 24px;
+      font-weight: 700;
+    }
+    .ssl-status.valid {
+      background: #d1fae5;
+      color: #065f46;
+    }
+    .ssl-status.invalid {
+      background: #fee2e2;
+      color: #991b1b;
+    }
+    .ssl-status.warning {
+      background: #fef3c7;
+      color: #92400e;
+    }
+    .ssl-icon {
+      font-size: 48px;
+    }
+    .cert-details {
+      display: grid;
+      gap: 15px;
+    }
+    .cert-item {
+      background: #f8fafc;
+      padding: 15px;
+      border-radius: 8px;
+      border-left: 4px solid #cbd5e1;
+    }
+    .cert-item.valid {
+      border-left-color: #10b981;
+    }
+    .cert-item.invalid {
+      border-left-color: #ef4444;
+    }
+    .cert-item.warning {
+      border-left-color: #f59e0b;
+    }
+    .cert-label {
+      font-size: 12px;
+      color: #64748b;
+      text-transform: uppercase;
+      font-weight: 600;
+      margin-bottom: 5px;
+    }
+    .cert-value {
+      font-size: 16px;
+      font-weight: 600;
+      color: #1e293b;
+    }
+    .warning-note {
+      background: #fef3c7;
+      border-left: 4px solid #f59e0b;
+      padding: 15px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      font-size: 14px;
+      color: #92400e;
+    }
+    .toast {
+      position: fixed;
+      bottom: 30px;
+      right: 30px;
+      background: #10b981;
+      color: white;
+      padding: 15px 25px;
+      border-radius: 10px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+      animation: slideIn 0.3s ease-out;
+      z-index: 1000;
+    }
+    @keyframes slideIn {
+      from { transform: translateX(400px); opacity: 0; }
+      to { transform: translateX(0); opacity: 1; }
+    }

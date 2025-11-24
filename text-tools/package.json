@@ -1,0 +1,17 @@
+{
+  "name": "text-tools",
+  "version": "1.0.0",
+  "description": "Suite of online text tools with SEO and security best practices.",
+  "main": "index.php",
+  "scripts": {
+    "build": "grunt"
+  },
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "grunt": "^1.6.1",
+    "grunt-contrib-uglify": "^5.2.2",
+    "grunt-contrib-cssmin": "^4.0.0",
+    "grunt-contrib-htmlmin": "^3.1.0"
+  }
+}

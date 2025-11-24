@@ -1,0 +1,7 @@
+﻿:root { --bg:#0b0f14; --fg:#e6eef7; --muted:#9fb3c8; --accent:#4da3ff; }
+    html,body{height:100%}
+    body { background: var(--bg); color: var(--fg); }
+    a { color: var(--accent); }
+    .card, .form-control, .form-select { background:#0f1520; color:var(--fg); border-color:#2a3a4d; }
+    .time-slot { background:#0f1520; border: 1px solid #2a3a4d; }
+    .time-slot.good { border-color: #28a745; background: rgba(40,167,69,0.1); }

@@ -1,0 +1,77 @@
+﻿:root {
+      --bg: #0b0f14;
+      --fg: #e6eef7;
+      --muted: #9fb3c8;
+      --accent: #4da3ff;
+      --card-bg: #0f1520;
+      --border: #2a3a4d;
+    }
+    
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { color: #6bb5ff; text-decoration: underline; }
+    
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 0.75rem;
+    }
+    
+    .stopwatch-display {
+      font-size: clamp(3rem, 12vw, 7rem);
+      font-weight: 700;
+      font-family: 'Courier New', monospace;
+      letter-spacing: 0.05em;
+      text-align: center;
+      padding: 2rem 0;
+      color: var(--accent);
+    }
+    
+    .lap-table {
+      max-height: 400px;
+      overflow-y: auto;
+    }
+    
+    .lap-table::-webkit-scrollbar {
+      width: 8px;
+    }
+    
+    .lap-table::-webkit-scrollbar-track {
+      background: var(--card-bg);
+    }
+    
+    .lap-table::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 4px;
+    }
+    
+    .table {
+      color: var(--fg);
+    }
+    
+    .table-dark {
+      --bs-table-bg: var(--card-bg);
+      --bs-table-border-color: var(--border);
+    }
+    
+    .btn-control {
+      min-width: 120px;
+      font-weight: 600;
+      padding: 0.75rem 1.5rem;
+    }
+    
+    .fastest-lap {
+      color: #4ade80;
+      font-weight: 600;
+    }
+    
+    .slowest-lap {
+      color: #f87171;
+      font-weight: 600;
+    }
